@@ -1,6 +1,8 @@
 # Pivoting Lab
 
-Originally forked from https://gkiran.com.np/blog/pivoting
+Originally forked from https://github.com/Cimihan123/Creating-Pivoting-Lab-In-Docker
+
+See the blog here for information on the lab and how to pivot through it: https://gkiran.com.np/blog/pivoting
 
 
 MIT License
