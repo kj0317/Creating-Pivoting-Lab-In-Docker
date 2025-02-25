@@ -1,4 +1,4 @@
-FROM phusion/baseimage:master
+FROM phusion/baseimage:jammy-1.0.4
 
 RUN apt update -y \
     && apt install -y \
