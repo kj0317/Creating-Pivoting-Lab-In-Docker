@@ -80,13 +80,18 @@ services:
         ipv4_address: 10.10.3.30
 
   # ────────────────────────────────────────────
-  # TARGET — TODO (final target on Net C)
+  # TARGET — Final objective on the deepest network
+  #   A "SecretVault" internal credentials store.
+  #   Reaching this page = lab complete.
   # ────────────────────────────────────────────
-  # target:
-  #   ...
-  #   networks:
-  #     net_c:
-  #       ipv4_address: 10.10.3.40
+  target:
+    build:
+      context: ./dockerfiles/target
+    container_name: target
+    hostname: target
+    networks:
+      net_c:
+        ipv4_address: 10.10.3.40
 
 # ══════════════════════════════════════════════════════════════
 # Networks — Three isolated segments
