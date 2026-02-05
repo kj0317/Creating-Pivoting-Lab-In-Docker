@@ -22,7 +22,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ──────────────────────────────────────────────
 # 2. Flask for the internal admin dashboard
 # ──────────────────────────────────────────────
-RUN pip3 install flask --break-system-packages
+RUN pip3 install --no-cache-dir flask
 
 # ──────────────────────────────────────────────
 # 3. Application files
