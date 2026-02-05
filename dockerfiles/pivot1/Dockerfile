@@ -24,7 +24,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ──────────────────────────────────────────────
 # 2. Flask for the vulnerable web app
 # ──────────────────────────────────────────────
-RUN pip3 install flask --break-system-packages
+RUN pip3 install --no-cache-dir flask
 
 # ──────────────────────────────────────────────
 # 3. SSH configuration
