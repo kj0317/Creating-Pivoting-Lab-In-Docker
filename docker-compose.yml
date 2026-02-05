@@ -48,15 +48,20 @@ services:
     tty: true
 
   # ────────────────────────────────────────────
-  # PIVOT1 — TODO (first compromised host)
+  # PIVOT1 — First compromised host (dual-homed)
+  #   Vuln: command injection on web app (port 5000)
+  #   SSH:  weak root creds (brute-forceable)
   # ────────────────────────────────────────────
-  # pivot1:
-  #   ...
-  #   networks:
-  #     net_a:
-  #       ipv4_address: 10.10.1.20
-  #     net_b:
-  #       ipv4_address: 10.10.2.20
+  pivot1:
+    build:
+      context: ./dockerfiles/pivot1
+    container_name: pivot1
+    hostname: pivot1
+    networks:
+      net_a:
+        ipv4_address: 10.10.1.20
+      net_b:
+        ipv4_address: 10.10.2.20
 
   # ────────────────────────────────────────────
   # PIVOT2 — TODO (second pivot, deeper in network)
