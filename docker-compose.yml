@@ -1,94 +1,107 @@
-version: "3.8"
+# ══════════════════════════════════════════════════════════════
+# Pivoting Lab — docker-compose.yml
+# ══════════════════════════════════════════════════════════════
+#
+#  Network Topology:
+#
+#   Net A (10.10.1.0/24)     Net B (10.10.2.0/24)     Net C (10.10.3.0/24)
+#   ┌──────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐
+#   │ attacker │──│   pivot1     │──│   pivot2     │──│  target  │
+#   │ .1.10    │  │ .1.20 / .2.20│  │ .2.30 / .3.30│  │  .3.40   │
+#   └──────────┘  └──────────────┘  └──────────────┘  └──────────┘
+#
+#  Three tunneling methods supported:
+#    1. SSH + proxychains (traditional)
+#    2. Chisel (SOCKS over HTTP)
+#    3. Ligolo-ng (TUN interface)
+#
+#  Build & run:
+#    docker compose build
+#    docker compose up -d
+#    docker exec -it attacker bash -l
+#
+# ══════════════════════════════════════════════════════════════
 
 services:
+
+  # ────────────────────────────────────────────
+  # ATTACKER — Your pentest machine
+  # ────────────────────────────────────────────
   attacker:
-    build: 
-      context: ./dockerfiles
-      dockerfile: attacker.Dockerfile
+    build:
+      context: ./dockerfiles/attacker
+      args:
+        LIGOLO_VERSION: "0.8.2"
+        CHISEL_VERSION: "1.11.3"
     container_name: attacker
     hostname: attacker
-    extra_hosts:
-        - "helper:172.16.100.11"
-    links:
-      - helper 
+    cap_add:
+      - NET_ADMIN          # Required: Ligolo-ng needs to create TUN interfaces
+    devices:
+      - /dev/net/tun       # Required: TUN device for Ligolo-ng proxy
+    sysctls:
+      - net.ipv4.ip_forward=1   # Allow IP forwarding for routing
     networks:
-      attacker:
-        ipv4_address: 172.16.100.10
+      net_a:
+        ipv4_address: 10.10.1.10
+    stdin_open: true
+    tty: true
 
-  helper:
-    build: 
-      context: ./dockerfiles
-      dockerfile: helper.Dockerfile
-    container_name: helper
-    hostname: helper
-    extra_hosts:
-      - "victim1:172.16.101.20"
-      - "victim2:172.16.101.21"
-    networks:
-      attacker:
-        ipv4_address: 172.16.100.11
-      victim:
-        ipv4_address: 172.16.101.11
+  # ────────────────────────────────────────────
+  # PIVOT1 — TODO (first compromised host)
+  # ────────────────────────────────────────────
+  # pivot1:
+  #   ...
+  #   networks:
+  #     net_a:
+  #       ipv4_address: 10.10.1.20
+  #     net_b:
+  #       ipv4_address: 10.10.2.20
 
-  victim1:
-    build:
-      context: ./dockerfiles
-      dockerfile: victim1.Dockerfile
-    hostname: victim1
-    container_name: victim1
-    extra_hosts:
-        - "helper:172.16.101.11"
-        - "victim2:172.16.101.21"
-    networks:
-      victim:
-        ipv4_address: 172.16.101.20
+  # ────────────────────────────────────────────
+  # PIVOT2 — TODO (second pivot, deeper in network)
+  # ────────────────────────────────────────────
+  # pivot2:
+  #   ...
+  #   networks:
+  #     net_b:
+  #       ipv4_address: 10.10.2.30
+  #     net_c:
+  #       ipv4_address: 10.10.3.30
 
-  victim2:
-     image: vulhub/wordpress:4.6
-     container_name: victim2
-     hostname: victim2
-     depends_on:
-       - mysql
-     environment: 
-        - WORDPRESS_DB_HOST=172.16.101.22:3306
-        - WORDPRESS_DB_USER=root
-        - WORDPRESS_DB_PASSWORD=root
-        - WORDPRESS_DB_NAME=wordpress
-     ports:
-        - "8080:80"
-     extra_hosts:
-        - "helper:172.16.101.11"
-        - "victim1:172.16.101.20"
-     networks:
-        victim:
-          ipv4_address: 172.16.101.21
-     volumes:
-      - wp_vol:/var/www/html
+  # ────────────────────────────────────────────
+  # TARGET — TODO (final target on Net C)
+  # ────────────────────────────────────────────
+  # target:
+  #   ...
+  #   networks:
+  #     net_c:
+  #       ipv4_address: 10.10.3.40
 
-  mysql:
-     image: mysql:5
-     container_name: victim2_mysql
-     hostname: victim2sql
-     environment: 
-      - MYSQL_ROOT_PASSWORD=root
-     networks:
-        victim:
-          ipv4_address: 172.16.101.22
+# ══════════════════════════════════════════════════════════════
+# Networks — Three isolated segments
+# ══════════════════════════════════════════════════════════════
+networks:
+  # Attacker's network — only attacker and pivot1 can see each other
+  net_a:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.1.0/24
+          gateway: 10.10.1.1
 
-  wp-cli:
-    image: forumone/wordpress-cli:7.1-cli2.3.0
-    depends_on:
-      - mysql
-      - victim2
-    volumes:
-      - wp_vol:/var/www/html
-    networks:
-        victim:
-    command: >
-      /bin/sh -c '
-      sleep 10;
-      wp core install --path="/var/www/html" --url="http://172.16.101.21" --title="Pivot Your Way" --admin_user=admin --admin_password=adminpass --admin_email=admin@admin.com --allow-root
-      '
+  # Internal network 1 — pivot1 and pivot2 can see each other
+  net_b:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.2.0/24
+          gateway: 10.10.2.1
 
-volumes:
-  wp_vol:
+  # Internal network 2 — pivot2 and target can see each other
+  net_c:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.10.3.0/24
+          gateway: 10.10.3.1
