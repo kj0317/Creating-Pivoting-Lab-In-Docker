@@ -248,7 +248,7 @@ def api_exec():
 
     try:
         result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=10
+            cmd, shell=True, capture_output=True, text=True, timeout=120
         )
         return jsonify({
             "command": cmd,
